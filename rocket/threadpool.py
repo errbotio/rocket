@@ -119,7 +119,8 @@ class ThreadPool:
         if not amount:
             amount = self.max_threads
 
-        if self.alive:
+        if self.alive and self.max_threads > 0:
+            # Don't grow any further if we've reached max_threads
             amount = min([amount, self.max_threads - len(self.threads)])
 
         if __debug__:
