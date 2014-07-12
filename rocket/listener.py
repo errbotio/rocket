@@ -165,7 +165,11 @@ class Listener(Thread):
                 if not self.ready:
                     if __debug__:
                         self.err_log.debug('Listener exiting.')
-                    self.listener.shutdown(socket.SHUT_RDWR)
+                    try:
+                        self.listener.shutdown(socket.SHUT_RDWR)
+                    except socket.error:
+                        self.err_log.warning('Socket shutdown() failed, using close()')
+                        self.listener.close()
                     return
                 else:
                     continue
