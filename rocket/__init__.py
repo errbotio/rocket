@@ -11,8 +11,7 @@ import logging
 import platform
 
 # Define Constants
-# errbotio: patched to be > the abandonned official one.
-VERSION = '2.0.0'
+VERSION = '1.2.5'
 SERVER_NAME = socket.gethostname()
 SERVER_SOFTWARE = 'Rocket %s' % VERSION
 HTTP_SERVER_SOFTWARE = '%s Python/%s' % (SERVER_SOFTWARE, sys.version.split(' ')[0])
