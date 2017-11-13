@@ -43,13 +43,6 @@ class Listener(Thread):
         self.err_log = logging.getLogger('Rocket.Errors.Port%i' % self.port)
         self.err_log.addHandler(NullHandler())
 
-        # Build the socket
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        if not listener:
-            self.err_log.error("Failed to get socket.")
-            return
-
         if self.secure:
             if not has_ssl:
                 self.err_log.error("ssl module required to serve HTTPS.")
@@ -65,38 +58,54 @@ class Listener(Thread):
                           "'%s'.  Cannot bind to %s:%s" % data)
                 return
 
-        # Set socket options
-        try:
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        except:
-            msg = "Cannot share socket.  Using %s:%i exclusively."
-            self.err_log.warning(msg % (self.addr, self.port))
+        listener = None
+        for res in socket.getaddrinfo(self.addr, self.port, socket.AF_UNSPEC,
+                                      socket.SOCK_STREAM, 0, socket.AI_PASSIVE):
+            af, socktype, proto, canonname, sa = res
+            try:
+                listener = socket.socket(af, socktype, proto)
+            except OSError as msg:
+                listener = None
+                self.err_log.warning("Couldn't open socket: " + str(msg))
+                continue
+            # Set socket options
+            try:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            except:
+                msg = "Cannot share socket.  Using %s:%i exclusively."
+                self.err_log.warning(msg % (self.addr, self.port))
 
-        try:
-            if not IS_JYTHON:
-                listener.setsockopt(socket.IPPROTO_TCP,
-                                    socket.TCP_NODELAY,
-                                    1)
-        except:
-            msg = "Cannot set TCP_NODELAY, things might run a little slower"
-            self.err_log.warning(msg)
+            try:
+                if not IS_JYTHON:
+                    listener.setsockopt(socket.IPPROTO_TCP,
+                                        socket.TCP_NODELAY,
+                                        1)
+            except:
+                msg = "Cannot set TCP_NODELAY, things might run a little slower"
+                self.err_log.warning(msg)
+            try:
+                listener.bind(sa)
+                # We want socket operations to timeout periodically so we can
+                # check if the server is shutting down
+                listener.settimeout(THREAD_STOP_CHECK_INTERVAL)
+                # Listen for new connections allowing queue_size number of
+                # connections to wait before rejecting a connection.
+                listener.listen(queue_size)
 
-        try:
-            listener.bind((self.addr, self.port))
-        except:
-            msg = "Socket %s:%i in use by other process and it won't share."
-            self.err_log.error(msg % (self.addr, self.port))
-        else:
-            # We want socket operations to timeout periodically so we can
-            # check if the server is shutting down
-            listener.settimeout(THREAD_STOP_CHECK_INTERVAL)
-            # Listen for new connections allowing queue_size number of
-            # connections to wait before rejecting a connection.
-            listener.listen(queue_size)
+                self.listener = listener
 
-            self.listener = listener
+                self.ready = True
+            except OSError as msg:
+                listener.close()
+                msg = "Socket %s in use by other process and it won't share."
+                self.err_log.error(msg % sa)
+                listener = None
+                continue
+            break
 
-            self.ready = True
+        # no socket found
+        if not listener:
+            self.err_log.error("failed to get socket.")
 
     def wrap_socket(self, sock):
         try:
@@ -110,40 +119,40 @@ class Listener(Thread):
             # secure socket. We don't do anything because it will be detected
             # by Worker and dealt with appropriately.
             pass
-        
+
         return sock
 
     def start(self):
         if not self.ready:
             self.err_log.warning('Listener started when not ready.')
             return
-            
+
         if self.thread is not None and self.thread.isAlive():
             self.err_log.warning('Listener already running.')
             return
-            
+
         self.thread = Thread(target=self.listen, name="Port" + str(self.port))
-        
+
         self.thread.start()
-    
+
     def isAlive(self):
         if self.thread is None:
             return False
-        
+
         return self.thread.isAlive()
 
     def join(self):
         if self.thread is None:
             return
-            
+
         self.ready = False
-        
+
         self.thread.join()
-        
+
         del self.thread
         self.thread = None
         self.ready = True
-    
+
     def listen(self):
         if __debug__:
             self.err_log.debug('Entering main loop.')
@@ -154,9 +163,11 @@ class Listener(Thread):
                 if self.secure:
                     sock = self.wrap_socket(sock)
 
-                self.active_queue.put(((sock, addr),
-                                       self.interface[1],
-                                       self.secure))
+                self.active_queue.put((
+                    (sock, socket.getnameinfo(addr, socket.NI_NUMERICHOST | socket.NI_NUMERICSERV)),
+                    self.interface[1],
+                    self.secure
+                ))
 
             except socket.timeout:
                 # socket.timeout will be raised every THREAD_STOP_CHECK_INTERVAL
